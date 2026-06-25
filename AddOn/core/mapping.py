@@ -1,5 +1,5 @@
 import bpy
-from ..properties import STANDARD_BONE_NAMES
+from ..properties import STANDARD_BONE_NAMES # Import from the centralized properties file
 from collections import deque
 
 # 표준 본 이름과 매칭될 키워드 사전
@@ -329,14 +329,14 @@ def find_mapped_parent(armature_data, bone_name, mapped_bone_names):
 
 def merge_unmapped_weights(armature_obj, mesh_objs, bone_mapping):
     """
-    매핑되지 않은 본을 식별하고, 해당 본의 Vertex Group 가중치를
-    계층적으로 가장 가까운 '매핑된 부모 본'의 Vertex Group에 더합니다.
-    그 후, 불필요해진 본과 Vertex Group을 제거합니다.
+    Implements Guideline.md Phase 3:
+    Identifies unmapped bones, merges their weights to the closest mapped parent
+    by iterating vertices, and removes the now-unnecessary bones and vertex groups.
     """
     armature_data = armature_obj.data
     all_bone_names = {b.name for b in armature_data.bones}
     
-    # 매핑된 모든 소스 본 이름 집합을 가져옵니다.
+    # Get a set of all mapped source bone names
     mapped_source_bones = {
         getattr(bone_mapping, prop_name)
         for prop_name, _ in STANDARD_BONE_NAMES
@@ -345,65 +345,92 @@ def merge_unmapped_weights(armature_obj, mesh_objs, bone_mapping):
 
     unmapped_bone_names = all_bone_names - mapped_source_bones
     if not unmapped_bone_names:
-        print("병합할 매핑되지 않은 본이 없습니다.")
+        print("  - No unmapped bones to merge.")
         return
 
-    # 매핑되지 않은 본을 어떤 부모에게 병합할지 계획을 세웁니다.
-    # merge_plan: 가중치를 부모에게 병합할 본들
-    # bones_to_delete_without_merge: 병합할 부모가 없어 Vertex Group만 삭제할 본들
+    # Plan which unmapped bones to merge into which parent
+    # merge_plan: bones to merge to a parent
+    # bones_to_delete_without_merge: orphan bones whose vertex groups will just be deleted
     merge_plan = {}
     bones_to_delete_without_merge = set()
+    
+    # Fallback target: if no parent is found, merge to the root bone (e.g., hips)
+    # This prevents weight loss for orphan chains, as per TODO2.md's warning.
+    root_bone_name = getattr(bone_mapping, 'hips', None)
+
     for unmapped_bone in unmapped_bone_names:
         parent_target = find_mapped_parent(armature_data, unmapped_bone, mapped_source_bones)
         if parent_target:
             merge_plan[unmapped_bone] = parent_target
+        elif root_bone_name:
+            # Fallback for orphan bones/chains: merge to the main root bone
+            print(f"  - Info: No mapped parent for '{unmapped_bone}'. Merging to root '{root_bone_name}'.")
+            merge_plan[unmapped_bone] = root_bone_name
         else:
+            # If even the root isn't mapped, we have to discard the weights.
+            print(f"  - Warning: No mapped parent or root for '{unmapped_bone}'. Weights will be discarded.")
             bones_to_delete_without_merge.add(unmapped_bone)
     
     if not merge_plan and not bones_to_delete_without_merge:
-        print("처리할 매핑되지 않은 본이 없습니다.")
+        print("  - No unmapped bones to process.")
         return
 
-    # 컨텍스트 유지를 위해 원래 활성 오브젝트와 모드를 저장합니다.
+    # Store original context to restore it safely
     original_active = bpy.context.view_layer.objects.active
     original_mode = 'OBJECT'
     if original_active and original_active.mode:
         original_mode = original_active.mode
 
     try:
-        # 각 메쉬에 대해 병합 계획을 실행합니다.
+        # Execute the merge plan for each mesh
         for mesh_obj in mesh_objs:
             bpy.context.view_layer.objects.active = mesh_obj
+            if bpy.context.object.mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode='OBJECT')
+
+            print(f"  - Reconstructing weights for mesh '{mesh_obj.name}'...")
             
-            # 1. 가중치 병합
-            for unmapped_vg_name, target_vg_name in merge_plan.items():
-                unmapped_vg = mesh_obj.vertex_groups.get(unmapped_vg_name)
-                target_vg = mesh_obj.vertex_groups.get(target_vg_name)
+            vgs = mesh_obj.vertex_groups
+            mesh_data = mesh_obj.data
 
-                if not unmapped_vg or not target_vg:
-                    continue
+            # Create a map from unmapped group index to the target group object for fast lookup
+            merge_index_map = {}
+            for unmapped_name, target_name in merge_plan.items():
+                unmapped_vg = vgs.get(unmapped_name)
+                target_vg = vgs.get(target_name)
+                if unmapped_vg and target_vg:
+                    merge_index_map[unmapped_vg.index] = target_vg
+            
+            if merge_index_map:
+                # Iterate through all vertices ONCE to transfer weights
+                # This is much more performant than using modifiers in a loop.
+                for v in mesh_data.vertices:
+                    # Check if this vertex has weights from groups we need to merge
+                    groups_to_process = [g for g in v.groups if g.group in merge_index_map]
+                    
+                    for g in groups_to_process:
+                        target_vg = merge_index_map[g.group]
+                        # Guideline.md: "add()로 병합하라"
+                        target_vg.add([v.index], g.weight, 'ADD')
+                print(f"    - Merged weights from {len(merge_index_map)} groups.")
 
-                # Vertex Weight Mix 수정자를 사용하여 가중치를 병합합니다.
-                mix_mod = mesh_obj.modifiers.new(name="TempWeightMerge", type='VERTEX_WEIGHT_MIX')
-                mix_mod.vertex_group_a = unmapped_vg_name
-                mix_mod.vertex_group_b = target_vg_name
-                mix_mod.mix_mode = 'ADD'
-                mix_mod.mix_set = 'B'  # A(unmapped)의 가중치를 B(target)에 더합니다.
-
-                bpy.ops.object.modifier_apply(modifier=mix_mod.name)
-
-                # 이제 불필요해진 원본 Vertex Group을 제거합니다.
-                vg_to_remove = mesh_obj.vertex_groups.get(unmapped_vg_name)
+            # Remove the now-redundant vertex groups
+            groups_to_remove_names = list(merge_plan.keys()) + list(bones_to_delete_without_merge)
+            removed_count = 0
+            for vg_name in groups_to_remove_names:
+                vg_to_remove = vgs.get(vg_name)
                 if vg_to_remove:
-                    mesh_obj.vertex_groups.remove(vg_to_remove)
+                    vgs.remove(vg_to_remove)
+                    removed_count += 1
+            
+            if removed_count > 0:
+                print(f"    - Removed {removed_count} old vertex groups.")
 
-            # 2. 병합 대상이 없는 '고아' Vertex Group 제거
-            for vg_name in bones_to_delete_without_merge:
-                vg_to_remove = mesh_obj.vertex_groups.get(vg_name)
-                if vg_to_remove:
-                    mesh_obj.vertex_groups.remove(vg_to_remove)
+            # Guideline.md: "이후 반드시 Normalize All을 실행하라."
+            print(f"    - Normalizing all weights...")
+            bpy.ops.object.vertex_group_normalize_all(lock_active=False)
 
-        # 이제 아마추어 자체에서 매핑되지 않은 모든 본을 제거합니다.
+        # Finally, remove the unmapped bones from the armature itself
         bpy.context.view_layer.objects.active = armature_obj
         bpy.ops.object.mode_set(mode='EDIT')
         
@@ -415,14 +442,14 @@ def merge_unmapped_weights(armature_obj, mesh_objs, bone_mapping):
 
         bpy.ops.object.mode_set(mode='OBJECT')
         
-        print(f"{len(bones_to_remove_from_armature)}개의 매핑되지 않은 본 및 관련 데이터를 정리했습니다.")
+        print(f"  - Cleaned up {len(bones_to_remove_from_armature)} unmapped bones from armature.")
 
     finally:
-        # 원래 컨텍스트로 안전하게 복원합니다.
+        # Safely restore original context
         if original_active and original_active.name in bpy.data.objects:
             bpy.context.view_layer.objects.active = original_active
             if bpy.context.active_object and bpy.context.active_object.mode != original_mode:
                  bpy.ops.object.mode_set(mode=original_mode)
-        elif not bpy.context.view_layer.objects.active and armature_obj.name in bpy.data.objects:
-            # 활성 오브젝트가 없는 경우를 대비해 컨텍스트를 채워줍니다.
+        elif not bpy.context.view_layer.objects.active and armature_obj and armature_obj.name in bpy.data.objects:
             bpy.context.view_layer.objects.active = armature_obj
+            bpy.ops.object.mode_set(mode='OBJECT')

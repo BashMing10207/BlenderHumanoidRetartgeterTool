@@ -55,7 +55,7 @@ class HumanoidBoneMapping(bpy.types.PropertyGroup):
 def poll_armature(self, object):
     return object.type == 'ARMATURE'
 
-class RetargeterProperties(bpy.types.PropertyGroup):
+class RetargetingToolProperties(bpy.types.PropertyGroup):
     """애드온의 메인 데이터 그룹. 씬(Scene)에 저장됩니다."""
     
     target_armature: bpy.props.PointerProperty(
@@ -98,14 +98,14 @@ def register():
         HumanoidBoneMapping.__annotations__[prop_name] = bpy.props.StringProperty(name=display_name, default="")
 
     bpy.utils.register_class(HumanoidBoneMapping)
-    bpy.utils.register_class(RetargeterProperties)
+    bpy.utils.register_class(RetargetingToolProperties)
     
     # 씬에 메인 프로퍼티를 등록합니다.
-    bpy.types.Scene.retargeter_props = bpy.props.PointerProperty(type=RetargeterProperties)
+    bpy.types.Scene.retargeting_tool_props = bpy.props.PointerProperty(type=RetargetingToolProperties)
 
 def unregister():
-    del bpy.types.Scene.retargeter_props
+    del bpy.types.Scene.retargeting_tool_props
     
-    bpy.utils.unregister_class(RetargeterProperties)
+    bpy.utils.unregister_class(RetargetingToolProperties)
     bpy.utils.unregister_class(HumanoidBoneMapping)
     # __annotations__를 사용하면 클래스가 unregister될 때 Blender가 자동으로 정리해줍니다.

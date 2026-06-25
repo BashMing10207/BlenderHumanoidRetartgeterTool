@@ -1,95 +1,93 @@
 import bpy
-from mathutils import Matrix
-from ..properties import STANDARD_BONE_NAMES
+from ..properties import STANDARD_BONE_NAMES # Import from the centralized properties file
 
-def align_pose_to_target(target_armature, source_armature, target_mapping, source_mapping):
+def apply_alignment_constraints(context, target_arm, patched_arm, target_map, source_map):
     """
-    Source 아마추어의 포즈를 수정하여, 각 본의 방향이 Target 아마추어의
-    기준 포즈(Rest Pose) 방향과 일치하도록 정렬합니다.
-    각 포즈 본의 `matrix_basis`를 계산하여 적용합니다.
+    Implements GuidLine.md Phase 1: Proportion & Pose Alignment using Constraints.
+    Forces the patched_arm to match the target_arm's bone locations and orientations
+    by adding temporary 'WORLD' to 'WORLD' space constraints. This is the new, correct method.
     """
-    if not all([target_armature, source_armature, target_mapping, source_mapping]):
-        print("정렬 오류: Target, Source, 또는 매핑 정보가 누락되었습니다.")
+    if not target_arm or not patched_arm:
+        print("Alignment Error: Target or Patched armature not provided.")
         return
 
-    # --- 컨텍스트 관리 ---
-    original_active = bpy.context.view_layer.objects.active
+    print(f"'{patched_arm.name}'의 체형 및 포즈 동기화 시작 (제약 조건 방식)...")
+
+    # Ensure we are in Pose Mode for the patched armature
+    original_active = context.view_layer.objects.active
     original_mode = 'OBJECT'
-    if original_active:
+    if original_active and original_active.mode:
         original_mode = original_active.mode
-    
-    # --- 데이터 수집 (에딧 모드에서 기준 포즈 행렬 추출) ---
-    target_rest_matrices = {}
-    source_rest_matrices = {}
 
-    try:
-        # Target 아마추어를 에딧 모드로 전환하여 기준 행렬 추출
-        bpy.context.view_layer.objects.active = target_armature
-        bpy.ops.object.mode_set(mode='EDIT')
-        for prop_name, _ in STANDARD_BONE_NAMES:
-            target_bone_name = getattr(target_mapping, prop_name)
-            edit_bone = target_armature.data.edit_bones.get(target_bone_name)
-            if edit_bone:
-                target_rest_matrices[target_bone_name] = edit_bone.matrix.copy()
-        
-        # Source 아마추어를 에딧 모드로 전환하여 기준 행렬 추출
-        bpy.context.view_layer.objects.active = source_armature
-        bpy.ops.object.mode_set(mode='EDIT')
-        for prop_name, _ in STANDARD_BONE_NAMES:
-            source_bone_name = getattr(source_mapping, prop_name)
-            if source_bone_name:
-                edit_bone = source_armature.data.edit_bones.get(source_bone_name)
-                if edit_bone:
-                    source_rest_matrices[source_bone_name] = edit_bone.matrix.copy()
+    bpy.context.view_layer.objects.active = patched_arm
+    bpy.ops.object.mode_set(mode='POSE')
 
-    finally:
-        # 항상 오브젝트 모드로 복귀 보장
-        bpy.ops.object.mode_set(mode='OBJECT')
+    # Process all mapped bones
+    for prop_name, _ in STANDARD_BONE_NAMES:
+        source_bone_name = getattr(source_map, prop_name, None)
+        target_bone_name = getattr(target_map, prop_name, None)
 
-    # --- 포즈 적용 (포즈 모드에서) ---
-    try:
-        bpy.context.view_layer.objects.active = source_armature
-        bpy.ops.object.mode_set(mode='POSE')
+        if source_bone_name and target_bone_name:
+            source_pbone = patched_arm.pose.bones.get(source_bone_name)
+            target_pbone = target_arm.pose.bones.get(target_bone_name)
 
-        for prop_name, _ in STANDARD_BONE_NAMES:
-            target_bone_name = getattr(target_mapping, prop_name)
-            source_bone_name = getattr(source_mapping, prop_name)
+            if source_pbone and target_pbone:
+                # 1. Copy Location Constraint
+                # Guideline: 공간은 반드시 WORLD to WORLD로 설정
+                loc_constraint = source_pbone.constraints.new('COPY_LOCATION')
+                loc_constraint.target = target_arm
+                loc_constraint.subtarget = target_bone_name
+                loc_constraint.owner_space = 'WORLD'
+                loc_constraint.target_space = 'WORLD'
 
-            if not source_bone_name or target_bone_name not in target_rest_matrices or source_bone_name not in source_rest_matrices:
-                continue
-            
-            source_pose_bone = source_armature.pose.bones.get(source_bone_name)
-            if not source_pose_bone:
-                continue
+                # 2. Copy Rotation Constraint
+                # Guideline: 공간은 반드시 WORLD to WORLD로 설정
+                rot_constraint = source_pbone.constraints.new('COPY_ROTATION')
+                rot_constraint.target = target_arm
+                rot_constraint.subtarget = target_bone_name
+                rot_constraint.owner_space = 'WORLD'
+                rot_constraint.target_space = 'WORLD'
 
-            target_rest_matrix = target_rest_matrices[target_bone_name]
-            source_rest_matrix = source_rest_matrices[source_bone_name]
+                # 3. (Optional) Stretch To Constraint
+                # Guideline: 필요시 STRETCH_TO 제약 조건 부여
+                # Note: This can sometimes cause undesirable scaling. Enable if needed.
+                # stretch_constraint = source_pbone.constraints.new('STRETCH_TO')
+                # stretch_constraint.target = target_arm
+                # stretch_constraint.subtarget = target_bone_name
+                # # Stretch To doesn't have space settings, it works with bone tips.
 
-            # 최종 포즈 행렬은 다음을 가져야 함:
-            # - Target 기준 본의 '회전'
-            # - Source 기준 본의 '위치'와 '스케일' (길이 보존)
-            source_loc, _, source_scl = source_rest_matrix.decompose()
-            _, target_rot, _ = target_rest_matrix.decompose()
+    # Force the viewport to update to reflect the new pose
+    context.view_layer.update()
 
-            # 원하는 최종 행렬(아마추어 공간 기준)을 재구성
-            final_matrix = (
-                Matrix.Translation(source_loc) @
-                target_rot.to_matrix().to_4x4() @
-                Matrix.Diagonal(source_scl).to_4x4()
-            )
-
-            # 이 final_matrix를 만들기 위한 matrix_basis를 역산
-            # final_matrix = source_rest_matrix @ matrix_basis
-            # => matrix_basis = source_rest_matrix.inverted() @ final_matrix
-            if source_rest_matrix.determinant() != 0:
-                matrix_basis = source_rest_matrix.inverted() @ final_matrix
-                source_pose_bone.matrix_basis = matrix_basis
-
-    finally:
-        # --- 컨텍스트 복원 ---
-        bpy.ops.object.mode_set(mode='OBJECT')
-        if original_active:
-            bpy.context.view_layer.objects.active = original_active
+    # Restore original context
+    if original_active and original_active.name in bpy.data.objects:
+        bpy.context.view_layer.objects.active = original_active
+        if bpy.context.active_object.mode != original_mode:
             bpy.ops.object.mode_set(mode=original_mode)
+    else:
+        bpy.ops.object.mode_set(mode='OBJECT')
 
-    print("포즈 정렬이 완료되었습니다.")
+    print("  - 제약 조건 기반 동기화 완료.")
+
+
+def clear_alignment_constraints(patched_arm):
+    """
+    Removes all retargeting-related constraints from the patched armature.
+    This is called after baking the mesh to break the dependency (Phase 2).
+    """
+    if not patched_arm or patched_arm.type != 'ARMATURE':
+        print("Constraint Clear Error: Patched armature not provided.")
+        return
+
+    print(f"'{patched_arm.name}'의 동기화 제약 조건 정리 시작...")
+
+    constraint_types_to_remove = {'COPY_LOCATION', 'COPY_ROTATION', 'STRETCH_TO'}
+
+    for pbone in patched_arm.pose.bones:
+        constraints_to_remove = [
+            c for c in pbone.constraints if c.type in constraint_types_to_remove
+        ]
+        for c in constraints_to_remove:
+            pbone.constraints.remove(c)
+
+    print("  - 제약 조건 정리 완료.")
