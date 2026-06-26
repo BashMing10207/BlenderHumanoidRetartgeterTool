@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Blender Humanoid Retargeter Tool",
     "author": "Hydrogen102",
-    "version": (1, 0, 1),
+    "version": (1, 1, 0),
     "blender": (4, 0, 0),
     "location": "3D View > N-Panel > Retargeter",
     "description": "Automatically retargets humanoid armatures.",
@@ -17,11 +17,11 @@ import importlib
 # 이 부분이 없으면 .py 파일을 수정해도 블렌더를 재시작하기 전까지 변경사항이 반영되지 않을 수 있습니다.
 if "bpy" in locals():
     # core 패키지 내부 모듈부터 리로드
-    from .core import mapping, alignment, finalization
+    from .core import mapping, alignment, finalization, normalization
     importlib.reload(mapping)
     importlib.reload(alignment)
     importlib.reload(finalization)
-    # importlib.reload(normalization) # normalization.py is not used in the new pipeline
+    importlib.reload(normalization)
     # 상위 모듈 리로드
     from . import properties, ui, operators
     importlib.reload(properties)
@@ -32,7 +32,6 @@ if "bpy" in locals():
 from . import properties
 from . import ui
 from . import operators
-from .core import mapping, alignment, finalization
 
 # 등록/해제할 모듈들을 리스트로 관리합니다.
 # 등록 순서는 매우 중요합니다: 데이터(properties) -> 기능(operators) -> UI(ui)

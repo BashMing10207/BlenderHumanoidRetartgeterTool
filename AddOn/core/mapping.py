@@ -335,12 +335,12 @@ def merge_unmapped_weights(armature_obj, mesh_objs, bone_mapping):
     """
     armature_data = armature_obj.data
     all_bone_names = {b.name for b in armature_data.bones}
-    
+
     # Get a set of all mapped source bone names
     mapped_source_bones = {
         getattr(bone_mapping, prop_name)
         for prop_name, _ in STANDARD_BONE_NAMES
-        if getattr(bone_mapping, prop_name)
+        if getattr(bone_mapping, prop_name, None)
     }
 
     unmapped_bone_names = all_bone_names - mapped_source_bones
@@ -348,13 +348,14 @@ def merge_unmapped_weights(armature_obj, mesh_objs, bone_mapping):
         print("  - No unmapped bones to merge.")
         return
 
+    print(f"Found {len(unmapped_bone_names)} unmapped bones. Planning weight merge...")
+
     # Plan which unmapped bones to merge into which parent
     # merge_plan: bones to merge to a parent
-    # bones_to_delete_without_merge: orphan bones whose vertex groups will just be deleted
+    # bones_to_discard: orphan bones whose vertex groups will just be deleted
     merge_plan = {}
-    bones_to_delete_without_merge = set()
-    
-    # Fallback target: if no parent is found, merge to the root bone (e.g., hips)
+    bones_to_discard = set()
+
     # This prevents weight loss for orphan chains, as per TODO2.md's warning.
     root_bone_name = getattr(bone_mapping, 'hips', None)
 
@@ -368,10 +369,10 @@ def merge_unmapped_weights(armature_obj, mesh_objs, bone_mapping):
             merge_plan[unmapped_bone] = root_bone_name
         else:
             # If even the root isn't mapped, we have to discard the weights.
-            print(f"  - Warning: No mapped parent or root for '{unmapped_bone}'. Weights will be discarded.")
-            bones_to_delete_without_merge.add(unmapped_bone)
-    
-    if not merge_plan and not bones_to_delete_without_merge:
+            print(f"  - Warning: No mapped parent or root for '{unmapped_bone}'. Its weights will be discarded.")
+            bones_to_discard.add(unmapped_bone)
+
+    if not merge_plan and not bones_to_discard:
         print("  - No unmapped bones to process.")
         return
 
@@ -382,6 +383,9 @@ def merge_unmapped_weights(armature_obj, mesh_objs, bone_mapping):
         original_mode = original_active.mode
 
     try:
+        # This list contains all bone names that will be removed from the armature.
+        bones_to_process_names = list(merge_plan.keys()) + list(bones_to_discard)
+
         # Execute the merge plan for each mesh
         for mesh_obj in mesh_objs:
             bpy.context.view_layer.objects.active = mesh_obj
@@ -389,7 +393,7 @@ def merge_unmapped_weights(armature_obj, mesh_objs, bone_mapping):
                 bpy.ops.object.mode_set(mode='OBJECT')
 
             print(f"  - Reconstructing weights for mesh '{mesh_obj.name}'...")
-            
+
             vgs = mesh_obj.vertex_groups
             mesh_data = mesh_obj.data
 
@@ -400,49 +404,49 @@ def merge_unmapped_weights(armature_obj, mesh_objs, bone_mapping):
                 target_vg = vgs.get(target_name)
                 if unmapped_vg and target_vg:
                     merge_index_map[unmapped_vg.index] = target_vg
-            
+
             if merge_index_map:
                 # Iterate through all vertices ONCE to transfer weights
                 # This is much more performant than using modifiers in a loop.
                 for v in mesh_data.vertices:
-                    # Check if this vertex has weights from groups we need to merge
-                    groups_to_process = [g for g in v.groups if g.group in merge_index_map]
-                    
-                    for g in groups_to_process:
-                        target_vg = merge_index_map[g.group]
-                        # Guideline.md: "add()로 병합하라"
-                        target_vg.add([v.index], g.weight, 'ADD')
+                    # --- Safe Weight Transfer Pattern ---
+                    # Step 1: Read all weights that need to be transferred for this vertex.
+                    # We collect them first to avoid modifying the v.groups collection while iterating over it,
+                    # which can cause errors or crashes.
+                    transfers_for_this_vertex = []
+                    for g in v.groups:
+                        if g.group in merge_index_map:
+                            transfers_for_this_vertex.append((merge_index_map[g.group], g.weight))
+
+                    # Step 2: Now, safely apply the collected weights to their new target groups.
+                    for target_vg, weight in transfers_for_this_vertex:
+                        target_vg.add([v.index], weight, 'ADD')
+
                 print(f"    - Merged weights from {len(merge_index_map)} groups.")
 
             # Remove the now-redundant vertex groups
-            groups_to_remove_names = list(merge_plan.keys()) + list(bones_to_delete_without_merge)
+            groups_to_remove_names = bones_to_process_names
             removed_count = 0
             for vg_name in groups_to_remove_names:
                 vg_to_remove = vgs.get(vg_name)
                 if vg_to_remove:
                     vgs.remove(vg_to_remove)
                     removed_count += 1
-            
+
             if removed_count > 0:
                 print(f"    - Removed {removed_count} old vertex groups.")
-
-            # Guideline.md: "이후 반드시 Normalize All을 실행하라."
-            print(f"    - Normalizing all weights...")
-            bpy.ops.object.vertex_group_normalize_all(lock_active=False)
 
         # Finally, remove the unmapped bones from the armature itself
         bpy.context.view_layer.objects.active = armature_obj
         bpy.ops.object.mode_set(mode='EDIT')
-        
-        bones_to_remove_from_armature = list(merge_plan.keys()) + list(bones_to_delete_without_merge)
-        for bone_name in bones_to_remove_from_armature:
+
+        for bone_name in bones_to_process_names:
             edit_bone = armature_obj.data.edit_bones.get(bone_name)
             if edit_bone:
                 armature_obj.data.edit_bones.remove(edit_bone)
 
         bpy.ops.object.mode_set(mode='OBJECT')
-        
-        print(f"  - Cleaned up {len(bones_to_remove_from_armature)} unmapped bones from armature.")
+        print(f"  - Cleaned up {len(bones_to_process_names)} unmapped bones from armature.")
 
     finally:
         # Safely restore original context

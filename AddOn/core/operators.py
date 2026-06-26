@@ -1,8 +1,8 @@
 import bpy
 import time
-from .core import mapping
-from .core import alignment
-from .core import finalization
+from . import mapping
+from . import alignment
+from . import finalization
 
 class BHRT_OT_ExecuteRetargeting(bpy.types.Operator):
     """
@@ -90,6 +90,7 @@ class BHRT_OT_ExecuteRetargeting(bpy.types.Operator):
             # This is a simplified version; a full implementation would track original meshes too.
 
             return {'CANCELLED'}
+
 
 def register():
     bpy.utils.register_class(BHRT_OT_ExecuteRetargeting)

@@ -17,8 +17,8 @@ class BHRT_PT_MainPanel(bpy.types.Panel):
         box = layout.box()
         box.label(text="1. Select Armatures", icon='ARMATURE_DATA')
         col = box.column()
-        box.prop(props, "target_armature")
-        box.prop(props, "source_armature")
+        col.prop(props, "target_armature")
+        col.prop(props, "source_armature")
 
         layout.separator()
 
