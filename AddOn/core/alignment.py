@@ -75,9 +75,18 @@ def align_and_bake_pose(context, target_arm, patched_arm, patched_meshes, target
                 target_vec = (target_arm.matrix_world @ target_child_pbone.head) - (target_arm.matrix_world @ target_pbone.head)
                 source_vec = (patched_arm.matrix_world @ source_child_pbone.head) - (patched_arm.matrix_world @ source_pbone.head)
             else:
-                # Fallback for leaf bones (e.g., head, hands, feet) using tail-head
-                target_vec = (target_arm.matrix_world @ target_pbone.tail) - (target_arm.matrix_world @ target_pbone.head)
-                source_vec = (patched_arm.matrix_world @ source_pbone.tail) - (patched_arm.matrix_world @ source_pbone.head)
+                # --- Exception Handling for Leaf Bones ---
+                # For leaf bones (head, hands, feet), the tail position is unreliable and causes twisting.
+                # Instead, we define the leaf bone's direction as a continuation of its parent's direction.
+                # This provides a stable, topologically-derived vector.
+                if source_pbone.parent and target_pbone.parent:
+                    # Vector from parent's head to current bone's head, which defines the parent's direction.
+                    target_vec = (target_arm.matrix_world @ target_pbone.head) - (target_arm.matrix_world @ target_pbone.parent.head)
+                    source_vec = (patched_arm.matrix_world @ source_pbone.head) - (patched_arm.matrix_world @ source_pbone.parent.head)
+                else:
+                    # Absolute fallback for parentless leaf bones (rare): use the original tail-head vector.
+                    target_vec = (target_arm.matrix_world @ target_pbone.tail) - (target_arm.matrix_world @ target_pbone.head)
+                    source_vec = (patched_arm.matrix_world @ source_pbone.tail) - (patched_arm.matrix_world @ source_pbone.head)
 
             # Skip zero-length bones (e.g., helper bones)
             if source_vec.length < 0.0001 or target_vec.length < 0.0001:
