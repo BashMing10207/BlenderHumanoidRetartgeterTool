@@ -55,6 +55,32 @@ class HumanoidBoneMapping(bpy.types.PropertyGroup):
 def poll_armature(self, object):
     return object.type == 'ARMATURE'
 
+def update_target_armature(self, context):
+    """
+    target_armature가 변경될 때 실행되는 콜백 함수입니다.
+    기존 본 매핑을 초기화합니다.
+    """
+    bone_mapping = self.target_bone_mapping
+    for prop_name, _ in STANDARD_BONE_NAMES:
+        setattr(bone_mapping, prop_name, "")
+
+
+def update_source_armature(self, context):
+    """
+    source_armature가 변경될 때 실행되는 콜백 함수입니다.
+    기존 본 매핑을 초기화하여 유효하지 않은 참조를 방지하고,
+    UI가 EnumProperty 드롭다운을 새로고침하도록 합니다.
+    """
+    # self는 RetargetingToolProperties 인스턴스입니다.
+    bone_mapping = self.source_bone_mapping
+    
+    # 모든 본 매핑을 초기화합니다.
+    for prop_name, _ in STANDARD_BONE_NAMES:
+        # StringProperty를 빈 문자열로 재설정합니다.
+        # prop_search UI에서는 '비어 있음'으로 표시됩니다.
+        setattr(bone_mapping, prop_name, "")
+    # 프로퍼티 변경 시 UI가 자동으로 업데이트되므로 명시적인 redraw 태그는 보통 필요하지 않습니다.
+
 class RetargetingToolProperties(bpy.types.PropertyGroup):
     """애드온의 메인 데이터 그룹. 씬(Scene)에 저장됩니다."""
     
@@ -62,19 +88,30 @@ class RetargetingToolProperties(bpy.types.PropertyGroup):
         name="Target Armature",
         description="표준이 될 타겟 리그 (A)",
         type=bpy.types.Object,
-        poll=poll_armature
+        poll=poll_armature,
+        update=update_target_armature
     )
     
     source_armature: bpy.props.PointerProperty(
         name="Source Armature",
         description="리타겟팅할 원본 모델 (B)",
         type=bpy.types.Object,
-        poll=poll_armature
+        poll=poll_armature,
+        update=update_source_armature
     )
     
     # Target과 Source를 위한 두 개의 독립된 매핑 데이터를 가집니다.
     target_bone_mapping: bpy.props.PointerProperty(type=HumanoidBoneMapping)
     source_bone_mapping: bpy.props.PointerProperty(type=HumanoidBoneMapping)
+
+    # UI에서 어떤 매핑을 편집할지 선택하는 탭
+    active_mapping_tab: bpy.props.EnumProperty(
+        items=[
+            ('SOURCE', "Source", "Map bones for the Source Armature"),
+            ('TARGET', "Target", "Map bones for the Target Armature"),
+        ],
+        name="Mapping For"
+    )
 
     # 실행 옵션
     use_scale_normalization: bpy.props.BoolProperty(
@@ -95,7 +132,12 @@ def register():
     # 기존에 속성이 보이지 않던 근본적인 원인을 해결합니다.
     HumanoidBoneMapping.__annotations__ = {}
     for prop_name, display_name in STANDARD_BONE_NAMES:
-        HumanoidBoneMapping.__annotations__[prop_name] = bpy.props.StringProperty(name=display_name, default="")
+        # prop_search UI를 사용하기 위해 StringProperty로 변경합니다.
+        # UI는 ui.py에서 layout.prop_search()를 통해 생성됩니다.
+        HumanoidBoneMapping.__annotations__[prop_name] = bpy.props.StringProperty(
+            name=display_name,
+            default=""
+        )
 
     bpy.utils.register_class(HumanoidBoneMapping)
     bpy.utils.register_class(RetargetingToolProperties)

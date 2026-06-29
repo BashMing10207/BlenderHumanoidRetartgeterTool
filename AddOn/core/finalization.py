@@ -72,6 +72,39 @@ def _cleanup_patched_armature(armature_obj):
         bpy.data.armatures.remove(armature_data, do_unlink=True)
         print(f"  - Removed data block: '{armature_data_name}'.")
 
+def cleanup_generated_objects(armature_obj, mesh_objs):
+    """
+    프로세스 실패 시 생성된 임시 아마추어와 메쉬들을 안전하게 제거합니다.
+    더 이상 사용되지 않는 데이터 블록도 함께 정리합니다.
+    """
+    objects_to_remove = []
+    if armature_obj and armature_obj.name in bpy.data.objects:
+        objects_to_remove.append(armature_obj)
+    
+    for mesh_obj in mesh_objs:
+        if mesh_obj and mesh_obj.name in bpy.data.objects:
+            objects_to_remove.append(mesh_obj)
+
+    if not objects_to_remove:
+        return
+
+    print(f"  - Cleaning up {len(objects_to_remove)} generated objects on failure...")
+
+    for obj in objects_to_remove:
+        obj_data = obj.data
+        obj_data_name = obj_data.name if obj_data else "N/A"
+        
+        bpy.data.objects.remove(obj, do_unlink=True)
+        
+        if obj_data and obj_data.users == 0:
+            data_collection = None
+            if isinstance(obj_data, bpy.types.Armature):
+                data_collection = bpy.data.armatures
+            elif isinstance(obj_data, bpy.types.Mesh):
+                data_collection = bpy.data.meshes
+            
+            if data_collection:
+                data_collection.remove(obj_data, do_unlink=True)
 
 def run_finalization_phase(context, patched_meshes, patched_armature, target_armature, target_map, source_map):
     """

@@ -1,98 +1,150 @@
 import bpy
-import time
-from .core import mapping
-from .core import alignment
-from .core import finalization
+# Import all necessary core modules for the pipeline
+from .core import mapping, alignment, normalization, finalization
+import traceback
 
-class BHRT_OT_ExecuteRetargeting(bpy.types.Operator):
+
+class BHR_OT_AutoMapBones(bpy.types.Operator):
     """
-    Executes the entire retargeting process based on the NEWPLAN.md specification.
-    Orchestrates all phases from duplication to finalization.
+    Automatically maps bones of the Source Armature to the standard humanoid rig
+    based on name heuristics. This operator fills in unmapped bone slots.
     """
-    bl_idname = "bhrt.execute_retargeting"
+    bl_idname = "bhr.auto_map_bones"
+    bl_label = "Auto-Map Bones"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    map_type: bpy.props.StringProperty(name="Mapping Type", default='SOURCE')
+
+    @classmethod
+    def poll(cls, context):
+        """Disable the operator if no armatures are selected at all."""
+        props = context.scene.retargeting_tool_props
+        # The UI will handle enabling/disabling for specific cases.
+        # This poll is a general safeguard.
+        return props.source_armature is not None or props.target_armature is not None
+
+    def execute(self, context):
+        """
+        Executes the auto-mapping process by calling the core logic
+        from the mapping module.
+        """
+        props = context.scene.retargeting_tool_props
+        armature = None
+        bone_mapping = None
+
+        if self.map_type == 'SOURCE':
+            armature = props.source_armature
+            bone_mapping = props.source_bone_mapping
+        elif self.map_type == 'TARGET':
+            armature = props.target_armature
+            bone_mapping = props.target_bone_mapping
+        
+        if not armature:
+            self.report({'WARNING'}, f"{self.map_type.capitalize()} Armature not set.")
+            return {'CANCELLED'}
+
+        self.report({'INFO'}, f"Running automatic bone mapping for {self.map_type.capitalize()}...")
+        
+        # Call the core function that contains the mapping logic
+        mapping.auto_bone_map(armature, bone_mapping)
+        
+        self.report({'INFO'}, "Auto-mapping complete. Please review the results.")
+        return {'FINISHED'}
+
+class BHR_OT_ExecuteRetarget(bpy.types.Operator):
+    """
+    Executes the entire retargeting pipeline:
+    1. Duplicates the source model.
+    2. Aligns pose and normalizes scale (optional).
+    3. Bakes the mesh shape by applying the modifier.
+    4. Merges weights from unmapped bones to their parents.
+    5. Rebinds the final mesh to the target armature.
+    """
+    bl_idname = "bhr.execute_retarget"
     bl_label = "Execute Retargeting"
-    bl_description = "Run the full automatic retargeting process"
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
+        """Disables the operator if the required armatures are not set."""
         props = context.scene.retargeting_tool_props
-        return props.target_armature and props.source_armature
+        if not props.target_armature or not props.source_armature:
+            return False
+        return True
 
     def execute(self, context):
-        start_time = time.time()
-        print("\n" + "="*50)
-        print("Blender Humanoid Retargeter: Process Started")
-        print("="*50)
-
         props = context.scene.retargeting_tool_props
-        target_arm = props.target_armature
-        source_arm = props.source_armature
-        target_map = props.target_bone_mapping
-        source_map = props.source_bone_mapping
+        
+        # Ensure we are in Object mode for safety
+        if context.active_object and context.active_object.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
 
-        patched_armature = None
-        patched_meshes = []
+        self.report({'INFO'}, "Starting retargeting process...")
 
+        new_armature = None
+        new_meshes = []
+
+        # 실행 로직이 core 모듈의 실제 함수를 호출하도록 리팩토링하여 AttributeError를 해결합니다.
         try:
-            # --- PRE-FLIGHT: Non-destructive Duplication ---
-            print("\n[Step 1/5] Isolating source objects (Non-destructive)...")
-            patched_armature, patched_meshes = mapping.duplicate_and_isolate(source_arm)
-            if not patched_armature or not patched_meshes:
-                raise RuntimeError("Failed to duplicate source armature or meshes.")
-            print(f"  - Created temporary objects: '{patched_armature.name}' and {len(patched_meshes)} meshes.")
-
-            # --- PRE-FLIGHT: Heuristic Bone Mapping ---
-            print("\n[Step 2/5] Running automatic bone mapping...")
-            mapping.auto_bone_map(target_arm, target_map)
-            mapping.auto_bone_map(patched_armature, source_map)
-            print("  - Bone mapping complete.")
-
-            # --- PHASE 1 & 2: Pose Alignment and Baking ---
-            print("\n[Step 3/5] Aligning pose and baking geometry (Phase 1 & 2)...")
+            # --- PHASE 1: DUPLICATION ---
+            self.report({'INFO'}, "Phase 1: Duplicating and isolating source model...")
+            new_armature, new_meshes = mapping.duplicate_and_isolate(props.source_armature)
+            if not new_armature or not new_meshes:
+                raise RuntimeError("Failed to duplicate the source model. Check console for errors.")
+            
+            # --- PHASE 2: ALIGNMENT, NORMALIZATION, AND BAKING ---
+            # 이 단계는 TODO2.md 설계에 따라 포괄적인 단일 함수를 호출하도록 변경되었습니다.
+            # 이를 통해 'align_pose' 관련 에러가 해결됩니다.
+            # 참고: 이 코드가 정상 동작하려면 'core/alignment.py'에 'align_and_bake_pose' 함수가 구현되어 있어야 합니다.
+            self.report({'INFO'}, "Phase 2: Aligning, scaling, and baking...")
+            # alignment.py가 제공되지 않았으므로, 해당 모듈에 아래 함수가 구현되어 있다고 가정합니다.
+            # 이 함수는 포즈, 스케일, 메쉬 베이크를 모두 처리해야 합니다.
             alignment.align_and_bake_pose(
-                context, target_arm, patched_armature, patched_meshes, target_map, source_map
+                context,
+                props.target_armature,
+                new_armature,
+                new_meshes,
+                props.target_bone_mapping,
+                props.source_bone_mapping,
+                use_pose=props.use_pose_alignment,
+                use_scale=props.use_scale_normalization
             )
+            
+            # --- PHASE 3: MERGE WEIGHTS ---
+            self.report({'INFO'}, "Phase 3: Merging unmapped bone weights...")
+            mapping.merge_unmapped_weights(new_armature, new_meshes, props.source_bone_mapping)
 
-            # --- PHASE 3: Weight Topology Reconstruction ---
-            print("\n[Step 4/5] Reconstructing weight topology (Phase 3)...")
-            mapping.merge_unmapped_weights(
-                patched_armature, patched_meshes, source_map
-            )
-
-            # --- PHASE 4: Finalization and Cleanup ---
-            print("\n[Step 5/5] Finalizing and rebinding to target (Phase 4)...")
+            # --- PHASE 4: FINALIZATION ---
+            # 존재하지 않는 'rebind_to_target' 대신, 실제 구현된 'run_finalization_phase'를 호출하도록 수정합니다.
+            self.report({'INFO'}, "Phase 4: Rebinding mesh to target armature...")
             finalization.run_finalization_phase(
-                context, patched_meshes, patched_armature, target_arm, target_map, source_map
+                context, new_meshes, new_armature, props.target_armature, props.target_bone_mapping, props.source_bone_mapping
             )
+            new_armature = None # Armature는 run_finalization_phase 내부에서 삭제됩니다.
 
-            # --- Process Complete ---
-            end_time = time.time()
-            print("\n" + "="*50)
-            self.report({'INFO'}, f"Retargeting complete in {end_time - start_time:.2f} seconds.")
-            print("="*50)
-
-            return {'FINISHED'}
+            self.report({'INFO'}, "Retargeting process completed successfully!")
 
         except Exception as e:
-            # --- Error Handling & Cleanup ---
-            self.report({'ERROR'}, f"Process failed: {e}")
-            print(f"\n[ERROR] An exception occurred: {e}")
+            self.report({'ERROR_INVALID_INPUT'}, f"Retargeting failed: {e}")
+            traceback.print_exc()
             
-            # Clean up any created temporary objects on failure
-            if patched_armature:
-                bpy.data.objects.remove(patched_armature, do_unlink=True)
-            for mesh in patched_meshes:
-                bpy.data.objects.remove(mesh, do_unlink=True)
+            if new_armature:
+                # 새로 구현된 정리 함수를 호출하여 두 번째 에러를 해결합니다.
+                finalization.cleanup_generated_objects(new_armature, new_meshes)
             
-            # Unhide originals
-            source_arm.hide_set(False)
-            # This is a simplified version; a full implementation would track original meshes too.
-
             return {'CANCELLED'}
+        
+        return {'FINISHED'}
+
+classes = (
+    BHR_OT_AutoMapBones,
+    BHR_OT_ExecuteRetarget,
+)
 
 def register():
-    bpy.utils.register_class(BHRT_OT_ExecuteRetargeting)
+    for cls in classes:
+        bpy.utils.register_class(cls)
 
 def unregister():
-    bpy.utils.unregister_class(BHRT_OT_ExecuteRetargeting)
+    for cls in reversed(classes):
+        bpy.utils.unregister_class(cls)
